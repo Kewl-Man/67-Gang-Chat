@@ -1,0 +1,49 @@
+{
+  "users": [
+    {
+      "id": "usr_1792193051070_d1vpse",
+      "username": "Ziauddin",
+      "passwordHash": "535041f124ea18cd4bfaaee9fd49dd9d353a45860a2b9a60e0309cfa0e13b9033fd0fb06215447bd2e34a6176033e838a3ce2136bcde3da2820ec068483f3ab6",
+      "salt": "098b532d6f4f850d59127acf768361f0",
+      "createdAt": "2026-10-16T23:24:11.070Z"
+    }
+  ],
+  "sessions": [
+    {
+      "token": "167f3f5a794adb5fbd89f4737c6ae475004c0de71f05c38ff0e849a1519c1d81",
+      "userId": "usr_1792193051070_d1vpse",
+      "username": "Ziauddin",
+      "createdAt": "2026-10-16T23:24:11.071Z"
+    },
+    {
+      "token": "907d364589efcd2e2ba428081bc3bc3e92ccd0dcfa2e48f4958a61833cb9fc85",
+      "userId": "usr_1792193051070_d1vpse",
+      "username": "Ziauddin",
+      "createdAt": "2026-10-16T23:27:08.310Z"
+    },
+    {
+      "token": "4026c0901fd68af500737d49737d981292d128009f24bae40987569924e390ab",
+      "userId": "usr_1792193051070_d1vpse",
+      "username": "Ziauddin",
+      "createdAt": "2026-10-16T23:38:52.738Z"
+    },
+    {
+      "token": "779aa18e05510537ede6e000518c8862a92110df04825098e316debebb28f30d",
+      "userId": "usr_1792193051070_d1vpse",
+      "username": "Ziauddin",
+      "createdAt": "2026-10-16T23:38:55.308Z"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg_1792193232297_uw4rtz",
+      "channelId": "main",
+      "userId": "usr_1792193051070_d1vpse",
+      "sender": "Ziauddin",
+      "content": "Salam alaikum brothers, test message persistence check.",
+      "type": "text",
+      "createdAt": "2026-10-16T23:27:12.297Z"
+    }
+  ],
+  "customMedia": []
+}

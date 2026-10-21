@@ -1,0 +1,6 @@
+{
+  "name": "67 Gang Chat",
+  "description": "A private, real-time group chat for classmates and friends with secure whitelist-based account creation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
