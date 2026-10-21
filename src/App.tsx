@@ -13,6 +13,10 @@ import { MessageInput } from './components/MessageInput.tsx';
 import { OnlineMembersDrawer } from './components/OnlineMembersDrawer.tsx';
 import { CropMediaModal } from './components/CropMediaModal.tsx';
 import { DiscordSidebar } from './components/DiscordSidebar.tsx';
+import { AvatarSettingsModal } from './components/AvatarSettingsModal.tsx';
+import { CameraCaptureModal } from './components/CameraCaptureModal.tsx';
+import { AvatarCropperModal } from './components/AvatarCropperModal.tsx';
+import { Toast, type ToastMessage } from './components/Toast.tsx';
 import type { CropShape } from './utils/gifConverter.ts';
 import { loadVault, saveVault, syncVaultWithServer } from './utils/storageVault.ts';
 
@@ -30,13 +34,32 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
   const [customMedia, setCustomMedia] = useState<CustomMedia[]>([]);
+  const [userAvatars, setUserAvatars] = useState<Record<string, string>>({});
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
   const [isOnlineDrawerOpen, setIsOnlineDrawerOpen] = useState<boolean>(false);
 
+  // Avatar Management Modal states
+  const [isAvatarSettingsOpen, setIsAvatarSettingsOpen] = useState<boolean>(false);
+  const [isCameraOpen, setIsCameraOpen] = useState<boolean>(false);
+  const [cropperState, setCropperState] = useState<{
+    isOpen: boolean;
+    imageSrc: string | null;
+  }>({
+    isOpen: false,
+    imageSrc: null,
+  });
+  const [isSavingAvatar, setIsSavingAvatar] = useState<boolean>(false);
+  const [isResettingAvatar, setIsResettingAvatar] = useState<boolean>(false);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+
   // Active channel: 'main' for 67 Gang Chat, or friend's username for private DM
   const [activeChannel, setActiveChannel] = useState<'main' | string>('main');
+
+  // Typing indicator state per channel
+  const [typingUsersMap, setTypingUsersMap] = useState<{ [channelId: string]: string[] }>({});
+  const typingTimersRef = useRef<{ [key: string]: number }>({});
 
   // Last read timestamp per channel
   const [lastReadMap, setLastReadMap] = useState<{ [key: string]: string }>(() => {
@@ -168,10 +191,26 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setAuthStatus(data);
+        return;
       }
-    } catch (err) {
-      console.error('Failed to fetch auth status:', err);
+    } catch {
+      // Offline / GitHub Pages fallback
     }
+
+    const vault = loadVault();
+    const registered = Array.from(
+      new Set([
+        ...vault.registeredNames,
+        ...Object.values(vault.savedAccounts).map((a) => a.username),
+        ...(vault.currentUser ? [vault.currentUser.username] : []),
+      ])
+    );
+    const available = APPROVED_NAMES.filter((name) => !registered.includes(name));
+    setAuthStatus({
+      approvedNames: [...APPROVED_NAMES],
+      registeredNames: registered,
+      availableNames: available,
+    });
   }, []);
 
   // 2. Fetch Initial Messages via REST
@@ -185,12 +224,18 @@ export default function App() {
         const data = await res.json();
         if (Array.isArray(data.messages)) {
           setMessages(data.messages);
+          return;
         }
       }
-    } catch (err) {
-      console.error('Failed to fetch messages:', err);
+    } catch {
+      // Offline / GitHub Pages fallback
     } finally {
       setIsLoadingMessages(false);
+    }
+
+    const vault = loadVault();
+    if (vault.messages.length > 0) {
+      setMessages(vault.messages);
     }
   }, []);
 
@@ -204,11 +249,45 @@ export default function App() {
         const data = await res.json();
         if (Array.isArray(data.all)) {
           setCustomMedia(data.all);
+          return;
         }
       }
-    } catch (err) {
-      console.error('Failed to fetch custom media:', err);
+    } catch {
+      // Offline / GitHub Pages fallback
     }
+
+    const vault = loadVault();
+    if (vault.customMedia.length > 0) {
+      setCustomMedia(vault.customMedia);
+    }
+  }, []);
+
+  // Fetch All User Avatars
+  const fetchAvatars = useCallback(async () => {
+    try {
+      const res = await fetch('/api/users/avatars');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.avatars) {
+          setUserAvatars(data.avatars);
+          return;
+        }
+      }
+    } catch {
+      // Offline / GitHub Pages fallback
+    }
+
+    const vault = loadVault();
+    const map: Record<string, string> = {};
+    if (vault.currentUser?.avatar) {
+      map[vault.currentUser.username.toLowerCase()] = vault.currentUser.avatar;
+    }
+    for (const acc of Object.values(vault.savedAccounts)) {
+      if ((acc as { avatar?: string }).avatar) {
+        map[acc.username.toLowerCase()] = (acc as { avatar?: string }).avatar!;
+      }
+    }
+    setUserAvatars(map);
   }, []);
 
   // 4. Connect to WebSocket Server
@@ -248,6 +327,9 @@ export default function App() {
             if (Array.isArray(payload.customMedia)) {
               setCustomMedia(payload.customMedia);
             }
+            if (payload.userAvatars) {
+              setUserAvatars(payload.userAvatars);
+            }
           } else if (payload.type === 'new_message') {
             setMessages((prev) => {
               if (prev.some((m) => m.id === payload.message.id)) return prev;
@@ -261,6 +343,55 @@ export default function App() {
             );
           } else if (payload.type === 'message_deleted') {
             setMessages((prev) => prev.filter((m) => m.id !== payload.messageId));
+          } else if (payload.type === 'user_avatar_updated') {
+            setUserAvatars((prev) => {
+              const updated = { ...prev };
+              if (payload.avatar) {
+                updated[payload.username.toLowerCase()] = payload.avatar;
+              } else {
+                delete updated[payload.username.toLowerCase()];
+              }
+              return updated;
+            });
+            setCurrentUser((prev) => {
+              if (prev && prev.username.toLowerCase() === payload.username.toLowerCase()) {
+                return { ...prev, avatar: payload.avatar || null };
+              }
+              return prev;
+            });
+          } else if (payload.type === 'typing') {
+            const ch = payload.channelId || 'main';
+            const username = payload.username;
+            if (currentUser && username.toLowerCase() === currentUser.username.toLowerCase()) {
+              return;
+            }
+
+            const timerKey = `${ch}:${username.toLowerCase()}`;
+            if (typingTimersRef.current[timerKey]) {
+              clearTimeout(typingTimersRef.current[timerKey]);
+            }
+
+            if (payload.isTyping) {
+              setTypingUsersMap((prev) => {
+                const currentList = prev[ch] || [];
+                if (currentList.some((u) => u.toLowerCase() === username.toLowerCase())) {
+                  return prev;
+                }
+                return { ...prev, [ch]: [...currentList, username] };
+              });
+
+              typingTimersRef.current[timerKey] = window.setTimeout(() => {
+                setTypingUsersMap((prev) => ({
+                  ...prev,
+                  [ch]: (prev[ch] || []).filter((u) => u.toLowerCase() !== username.toLowerCase()),
+                }));
+              }, 4000);
+            } else {
+              setTypingUsersMap((prev) => ({
+                ...prev,
+                [ch]: (prev[ch] || []).filter((u) => u.toLowerCase() !== username.toLowerCase()),
+              }));
+            }
           } else if (payload.type === 'presence') {
             if (Array.isArray(payload.onlineUsers)) {
               setOnlineUsers(payload.onlineUsers);
@@ -364,6 +495,7 @@ export default function App() {
         setToken(savedToken);
         fetchMessages(savedToken);
         fetchCustomMedia(savedToken);
+        fetchAvatars();
         connectWebSocket(savedToken);
         saveVault({ currentUser: verifiedUser, token: savedToken });
       } else {
@@ -382,7 +514,7 @@ export default function App() {
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
     };
-  }, [fetchAuthStatus, fetchMessages, fetchCustomMedia, connectWebSocket]);
+  }, [fetchAuthStatus, fetchMessages, fetchCustomMedia, fetchAvatars, connectWebSocket]);
 
   // Backup messages and custom media to vault whenever they update
   useEffect(() => {
@@ -396,6 +528,100 @@ export default function App() {
       saveVault({ customMedia });
     }
   }, [customMedia]);
+
+  // Active typing users for current channel (excluding oneself)
+  const currentTypingUsers = useMemo(() => {
+    const list = typingUsersMap[activeChannel] || [];
+    if (!currentUser) return list;
+    return list.filter((u) => u.toLowerCase() !== currentUser.username.toLowerCase());
+  }, [typingUsersMap, activeChannel, currentUser]);
+
+  // Send typing event
+  const handleSendTyping = useCallback(
+    (isTyping: boolean) => {
+      if (!currentUser) return;
+      const ch = activeChannel;
+
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(
+          JSON.stringify({
+            type: 'typing',
+            channelId: ch,
+            isTyping,
+          })
+        );
+      }
+
+      try {
+        if (typeof BroadcastChannel !== 'undefined') {
+          const bc = new BroadcastChannel('67_gang_typing');
+          bc.postMessage({
+            type: 'typing',
+            username: currentUser.username,
+            channelId: ch,
+            isTyping,
+          });
+          bc.close();
+        }
+      } catch {}
+    },
+    [currentUser, activeChannel]
+  );
+
+  // BroadcastChannel listener for multi-tab sync (messages & typing)
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const typingBc = new BroadcastChannel('67_gang_typing');
+    const msgBc = new BroadcastChannel('67_gang_messages');
+
+    typingBc.onmessage = (event) => {
+      const data = event.data;
+      if (data && data.type === 'typing' && data.username) {
+        if (currentUser && data.username.toLowerCase() === currentUser.username.toLowerCase()) return;
+        const ch = data.channelId || 'main';
+        const timerKey = `${ch}:${data.username.toLowerCase()}`;
+        if (typingTimersRef.current[timerKey]) {
+          clearTimeout(typingTimersRef.current[timerKey]);
+        }
+
+        if (data.isTyping) {
+          setTypingUsersMap((prev) => {
+            const currentList = prev[ch] || [];
+            if (currentList.some((u) => u.toLowerCase() === data.username.toLowerCase())) {
+              return prev;
+            }
+            return { ...prev, [ch]: [...currentList, data.username] };
+          });
+          typingTimersRef.current[timerKey] = window.setTimeout(() => {
+            setTypingUsersMap((prev) => ({
+              ...prev,
+              [ch]: (prev[ch] || []).filter((u) => u.toLowerCase() !== data.username.toLowerCase()),
+            }));
+          }, 4000);
+        } else {
+          setTypingUsersMap((prev) => ({
+            ...prev,
+            [ch]: (prev[ch] || []).filter((u) => u.toLowerCase() !== data.username.toLowerCase()),
+          }));
+        }
+      }
+    };
+
+    msgBc.onmessage = (event) => {
+      const data = event.data;
+      if (data && data.type === 'new_message' && data.message) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === data.message.id)) return prev;
+          return [...prev, data.message];
+        });
+      }
+    };
+
+    return () => {
+      typingBc.close();
+      msgBc.close();
+    };
+  }, [currentUser]);
 
   // Handle Login/Register Success
   const handleLoginSuccess = (newToken: string, user: User, salt?: string, hash?: string) => {
@@ -411,6 +637,7 @@ export default function App() {
     fetchAuthStatus();
     fetchMessages(newToken);
     fetchCustomMedia(newToken);
+    fetchAvatars();
     connectWebSocket(newToken);
     updateLastRead('main');
   };
@@ -484,11 +711,30 @@ export default function App() {
         });
         return true;
       }
-    } catch (err) {
-      console.error('Failed to send message via HTTP:', err);
+    } catch {
+      // Offline / GitHub Pages static fallback
     }
 
-    return false;
+    const localMsg: ChatMessage = {
+      id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8),
+      channelId: channelId || 'main',
+      userId: currentUser.id,
+      sender: currentUser.username,
+      recipient,
+      content,
+      type: 'text',
+      createdAt: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, localMsg]);
+    saveVault({ messages: [localMsg] });
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('67_gang_messages');
+        bc.postMessage({ type: 'new_message', message: localMsg });
+        bc.close();
+      }
+    } catch {}
+    return true;
   };
 
   // Send GIF
@@ -533,11 +779,31 @@ export default function App() {
         });
         return true;
       }
-    } catch (err) {
-      console.error('Failed to send GIF via HTTP:', err);
+    } catch {
+      // Offline / GitHub Pages static fallback
     }
 
-    return false;
+    const localMsg: ChatMessage = {
+      id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8),
+      channelId: channelId || 'main',
+      userId: currentUser.id,
+      sender: currentUser.username,
+      recipient,
+      content: caption,
+      type: 'gif',
+      mediaUrl,
+      createdAt: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, localMsg]);
+    saveVault({ messages: [localMsg] });
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('67_gang_messages');
+        bc.postMessage({ type: 'new_message', message: localMsg });
+        bc.close();
+      }
+    } catch {}
+    return true;
   };
 
   // Save Custom Media (Upload Handler from Crop Modal)
@@ -654,6 +920,112 @@ export default function App() {
     [token]
   );
 
+  // Save Cropped Avatar
+  const handleSaveCroppedAvatar = async (croppedDataUrl: string) => {
+    if (!token || !currentUser) return;
+    setIsSavingAvatar(true);
+    try {
+      const res = await fetch('/api/user/avatar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ avatar: croppedDataUrl }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const updatedAvatar = data.avatar || croppedDataUrl;
+        const updatedUser: User = { ...currentUser, avatar: updatedAvatar };
+        setCurrentUser(updatedUser);
+        setUserAvatars((prev) => ({
+          ...prev,
+          [currentUser.username.toLowerCase()]: updatedAvatar,
+        }));
+        saveVault({ currentUser: updatedUser });
+
+        // Broadcast via WS
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          socketRef.current.send(
+            JSON.stringify({
+              type: 'update_avatar',
+              avatar: updatedAvatar,
+            })
+          );
+        }
+
+        setCropperState({ isOpen: false, imageSrc: null });
+        setIsAvatarSettingsOpen(false);
+        setToast({
+          id: String(Date.now()),
+          type: 'success',
+          message: 'Profile picture updated successfully!',
+        });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setToast({
+          id: String(Date.now()),
+          type: 'error',
+          message: errData.error || 'Failed to update profile picture.',
+        });
+      }
+    } catch (err) {
+      console.error('Error saving avatar:', err);
+      setToast({
+        id: String(Date.now()),
+        type: 'error',
+        message: 'Network error saving profile picture.',
+      });
+    } finally {
+      setIsSavingAvatar(false);
+    }
+  };
+
+  // Reset Avatar to Default
+  const handleResetAvatar = async () => {
+    if (!token || !currentUser) return;
+    setIsResettingAvatar(true);
+    try {
+      const res = await fetch('/api/user/avatar', {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (res.ok) {
+        const updatedUser: User = { ...currentUser, avatar: null };
+        setCurrentUser(updatedUser);
+        setUserAvatars((prev) => {
+          const next = { ...prev };
+          delete next[currentUser.username.toLowerCase()];
+          return next;
+        });
+        saveVault({ currentUser: updatedUser });
+
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          socketRef.current.send(
+            JSON.stringify({
+              type: 'update_avatar',
+              avatar: null,
+            })
+          );
+        }
+
+        setToast({
+          id: String(Date.now()),
+          type: 'info',
+          message: 'Profile picture reset to default avatar.',
+        });
+      }
+    } catch (err) {
+      console.error('Error resetting avatar:', err);
+    } finally {
+      setIsResettingAvatar(false);
+    }
+  };
+
   if (isLoadingAuth) {
     return (
       <div className="min-h-screen bg-[#0b0e17] flex flex-col items-center justify-center text-zinc-400 gap-3">
@@ -676,7 +1048,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#0b0e17] text-zinc-100 font-sans">
-      {/* Discord-style Left Sidebar for 67 Gang & Private DMs (Only showing existing accounts) */}
+      {/* Discord-style Left Sidebar for 67 Gang & Private DMs */}
       <DiscordSidebar
         currentUser={currentUser}
         classmates={authStatus.registeredNames}
@@ -687,6 +1059,8 @@ export default function App() {
         }}
         unreadCounts={unreadCounts}
         onlineUsernames={onlineUsers}
+        userAvatars={userAvatars}
+        onOpenAvatarSettings={() => setIsAvatarSettingsOpen(true)}
       />
 
       {/* Main Chat Interface */}
@@ -702,6 +1076,9 @@ export default function App() {
             setActiveChannel('main');
             updateLastRead('main');
           }}
+          onOpenAvatarSettings={() => setIsAvatarSettingsOpen(true)}
+          userAvatars={userAvatars}
+          typingUsers={currentTypingUsers}
         />
 
         <main className="flex-1 flex flex-col overflow-hidden relative">
@@ -715,12 +1092,14 @@ export default function App() {
             isDm={activeChannel !== 'main'}
             onToggleReaction={handleToggleReaction}
             onDeleteMessage={handleDeleteMessage}
+            userAvatars={userAvatars}
           />
           <MessageInput
             onSendMessage={handleSendMessage}
             onSendGif={handleSendGif}
             customEmojis={customEmojis}
             customGifs={customGifs}
+            onTyping={handleSendTyping}
             onOpenUploadModal={(file, type) => {
               setCropModalState({
                 isOpen: true,
@@ -740,6 +1119,7 @@ export default function App() {
         currentUser={currentUser}
         onlineUsernames={onlineUsers}
         registeredUsernames={authStatus.registeredNames}
+        userAvatars={userAvatars}
       />
 
       {/* Upload & Crop Modal Popup in the Middle */}
@@ -750,6 +1130,45 @@ export default function App() {
         mediaType={cropModalState.mediaType}
         onSave={handleSaveCroppedMedia}
       />
+
+      {/* Avatar Management & Options Modal */}
+      <AvatarSettingsModal
+        isOpen={isAvatarSettingsOpen}
+        onClose={() => setIsAvatarSettingsOpen(false)}
+        currentUser={currentUser}
+        onOpenCropper={(src) => {
+          setIsAvatarSettingsOpen(false);
+          setCropperState({ isOpen: true, imageSrc: src });
+        }}
+        onOpenCamera={() => {
+          setIsAvatarSettingsOpen(false);
+          setIsCameraOpen(true);
+        }}
+        onResetAvatar={handleResetAvatar}
+        isResetting={isResettingAvatar}
+      />
+
+      {/* Live Camera Capture Modal */}
+      <CameraCaptureModal
+        isOpen={isCameraOpen}
+        onClose={() => setIsCameraOpen(false)}
+        onCapture={(capturedDataUrl) => {
+          setIsCameraOpen(false);
+          setCropperState({ isOpen: true, imageSrc: capturedDataUrl });
+        }}
+      />
+
+      {/* Interactive Circle Cropper Modal */}
+      <AvatarCropperModal
+        isOpen={cropperState.isOpen}
+        imageSrc={cropperState.imageSrc}
+        onClose={() => setCropperState({ isOpen: false, imageSrc: null })}
+        onSave={handleSaveCroppedAvatar}
+        isSaving={isSavingAvatar}
+      />
+
+      {/* Toast Notification */}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

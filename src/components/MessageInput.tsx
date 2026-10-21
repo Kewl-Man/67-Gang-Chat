@@ -10,6 +10,7 @@ interface MessageInputProps {
   customEmojis: CustomMedia[];
   customGifs: CustomMedia[];
   onOpenUploadModal: (file: File, type: 'emoji' | 'gif') => void;
+  onTyping?: (isTyping: boolean) => void;
   disabled?: boolean;
 }
 
@@ -19,6 +20,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   customEmojis,
   customGifs,
   onOpenUploadModal,
+  onTyping,
   disabled = false,
 }) => {
   const [content, setContent] = useState<string>('');
@@ -27,8 +29,30 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const typingTimerRef = useRef<number | null>(null);
 
   const MAX_LENGTH = 1000;
+
+  const reportTyping = (textValue: string) => {
+    if (!onTyping) return;
+    if (textValue.trim().length > 0) {
+      onTyping(true);
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = window.setTimeout(() => {
+        onTyping(false);
+      }, 2500);
+    } else {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      onTyping(false);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      if (onTyping) onTyping(false);
+    };
+  }, [onTyping]);
 
   // Find emojis currently mentioned in content for visual preview
   const detectedEmojis = customEmojis.filter((e) =>
@@ -63,6 +87,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const handleSend = async () => {
     const trimmed = content.trim();
     if (!trimmed || isSending || disabled || trimmed.length > MAX_LENGTH) return;
+
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    if (onTyping) onTyping(false);
 
     setIsSending(true);
     const success = await onSendMessage(trimmed);
@@ -232,7 +259,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             ref={textareaRef}
             rows={1}
             value={content}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={(e) => {
+              setContent(e.target.value);
+              reportTyping(e.target.value);
+            }}
             onKeyDown={handleKeyDown}
             placeholder="Type your message to 67 Gang... (Press Enter to send)"
             disabled={disabled}

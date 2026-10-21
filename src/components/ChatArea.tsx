@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ArrowDown, MessageSquare, Copy, Check, Trash2, SmilePlus } from 'lucide-react';
 import type { ChatMessage, CustomMedia, User } from '../types/chat.ts';
 import { getInitials, getMemberPalette } from '../utils/avatar.ts';
+import { UserAvatar } from './UserAvatar.tsx';
 
 interface ChatAreaProps {
   messages: ChatMessage[];
@@ -9,10 +10,11 @@ interface ChatAreaProps {
   customEmojis?: CustomMedia[];
   isLoadingMessages: boolean;
   firstUnreadMessageId?: string | null;
-  activeChatTitle?: string;
+  activeChatTitle: string;
   isDm?: boolean;
   onToggleReaction: (messageId: string, emoji: string) => void;
   onDeleteMessage: (messageId: string) => void;
+  userAvatars?: Record<string, string>;
 }
 
 const POPULAR_REACTIONS = ['👍', '❤️', '🔥', '😂'];
@@ -32,6 +34,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   isDm = false,
   onToggleReaction,
   onDeleteMessage,
+  userAvatars = {},
 }) => {
   const scrollBottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -234,12 +237,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   {!isMe && (
                     <div className="w-8 h-8 shrink-0">
                       {!isChained ? (
-                        <div
-                          className={`w-8 h-8 rounded-full bg-gradient-to-tr ${palette.bg} flex items-center justify-center font-bold text-xs text-white shadow-sm ring-1 ring-white/10`}
-                          title={msg.sender}
-                        >
-                          {initials}
-                        </div>
+                        <UserAvatar
+                          username={msg.sender}
+                          avatarUrl={userAvatars[msg.sender.toLowerCase()]}
+                          size="sm"
+                          className="shadow-sm"
+                        />
                       ) : (
                         <div className="w-8 h-8" />
                       )}

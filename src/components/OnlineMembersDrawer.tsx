@@ -1,8 +1,8 @@
 import React from 'react';
 import { X, Users, CheckCircle, Clock } from 'lucide-react';
 import { APPROVED_NAMES } from '../config/whitelist.ts';
-import { getInitials, getMemberPalette } from '../utils/avatar.ts';
 import type { User } from '../types/chat.ts';
+import { UserAvatar } from './UserAvatar.tsx';
 
 interface OnlineMembersDrawerProps {
   isOpen: boolean;
@@ -10,6 +10,7 @@ interface OnlineMembersDrawerProps {
   currentUser: User;
   onlineUsernames: string[];
   registeredUsernames: string[];
+  userAvatars?: Record<string, string>;
 }
 
 export const OnlineMembersDrawer: React.FC<OnlineMembersDrawerProps> = ({
@@ -18,6 +19,7 @@ export const OnlineMembersDrawer: React.FC<OnlineMembersDrawerProps> = ({
   currentUser,
   onlineUsernames,
   registeredUsernames,
+  userAvatars = {},
 }) => {
   if (!isOpen) return null;
 
@@ -46,7 +48,7 @@ export const OnlineMembersDrawer: React.FC<OnlineMembersDrawerProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-[#1f2538] transition-colors cursor-pointer"
+            className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-[#1f2638] transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -62,8 +64,7 @@ export const OnlineMembersDrawer: React.FC<OnlineMembersDrawerProps> = ({
             const isRegistered = registeredUsernames.some(
               (u) => u.toLowerCase() === name.toLowerCase()
             );
-            const palette = getMemberPalette(name);
-            const initials = getInitials(name);
+            const memberAvatar = isMe ? currentUser.avatar : userAvatars[name.toLowerCase()];
 
             return (
               <div
@@ -78,16 +79,13 @@ export const OnlineMembersDrawer: React.FC<OnlineMembersDrawerProps> = ({
               >
                 <div className="flex items-center gap-3">
                   <div className="relative">
-                    <div
-                      className={`w-9 h-9 rounded-full bg-gradient-to-tr ${palette.bg} flex items-center justify-center font-bold text-xs text-white shadow-sm ring-1 ring-white/10`}
-                    >
-                      {initials}
-                    </div>
-                    {isOnline && (
-                      <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-[#131724] flex items-center justify-center">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                      </span>
-                    )}
+                    <UserAvatar
+                      username={name}
+                      avatarUrl={memberAvatar}
+                      size="sm"
+                      showOnlineStatus={true}
+                      isOnline={isOnline}
+                    />
                   </div>
 
                   <div>

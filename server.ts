@@ -25,6 +25,7 @@ interface StoredUser {
   passwordHash: string;
   salt: string;
   createdAt: string;
+  avatar?: string | null;
 }
 
 interface StoredSession {
@@ -178,6 +179,16 @@ interface AuthenticatedRequest extends Request {
   sessionToken?: string;
 }
 
+function getUserAvatarsMap(): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const u of db.users) {
+    if (u.avatar) {
+      map[u.username.toLowerCase()] = u.avatar;
+    }
+  }
+  return map;
+}
+
 function getSessionUser(token: string | undefined): User | null {
   if (!token) return null;
   const session = db.sessions.find((s) => s.token === token);
@@ -188,6 +199,7 @@ function getSessionUser(token: string | undefined): User | null {
     id: user.id,
     username: user.username,
     createdAt: user.createdAt,
+    avatar: user.avatar || null,
   };
 }
 
@@ -278,6 +290,7 @@ async function startServer() {
           messages: visibleMessages,
           onlineUsers: getOnlineUsernames(),
           customMedia: db.customMedia,
+          userAvatars: getUserAvatarsMap(),
         })
       );
       broadcastPresence();
@@ -307,6 +320,7 @@ async function startServer() {
                 messages: visibleMessages,
                 onlineUsers: getOnlineUsernames(),
                 customMedia: db.customMedia,
+                userAvatars: getUserAvatarsMap(),
               })
             );
             broadcastPresence();
@@ -435,6 +449,44 @@ async function startServer() {
           });
           return;
         }
+
+        if (payload.type === 'update_avatar') {
+          const client = clientSockets.get(ws);
+          if (!client) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized.' }));
+            return;
+          }
+
+          const user = db.users.find((u) => u.id === client.user.id);
+          if (user) {
+            user.avatar = typeof payload.avatar === 'string' && payload.avatar.trim() ? payload.avatar : null;
+            client.user.avatar = user.avatar;
+            persistDatabase();
+
+            broadcast({
+              type: 'user_avatar_updated',
+              username: user.username,
+              avatar: user.avatar,
+            });
+          }
+          return;
+        }
+
+        if (payload.type === 'typing') {
+          const client = clientSockets.get(ws);
+          if (!client) return;
+
+          const channelId = typeof payload.channelId === 'string' ? payload.channelId : 'main';
+          const isTyping = Boolean(payload.isTyping);
+
+          broadcast({
+            type: 'typing',
+            username: client.user.username,
+            channelId,
+            isTyping,
+          });
+          return;
+        }
       } catch (err) {
         console.error('WS message handling error:', err);
       }
@@ -541,6 +593,7 @@ async function startServer() {
         id: newUser.id,
         username: newUser.username,
         createdAt: newUser.createdAt,
+        avatar: newUser.avatar || null,
       },
     });
   });
@@ -589,6 +642,7 @@ async function startServer() {
         id: user.id,
         username: user.username,
         createdAt: user.createdAt,
+        avatar: user.avatar || null,
       },
     });
   });
@@ -657,6 +711,7 @@ async function startServer() {
         id: user.id,
         username: user.username,
         createdAt: user.createdAt,
+        avatar: user.avatar || null,
       },
       message: 'Password reset successfully!',
     });
@@ -800,6 +855,65 @@ async function startServer() {
     });
 
     res.json({ success: true, messageId });
+  });
+
+  // 7c. Avatar Endpoints
+  app.get('/api/users/avatars', (_req: Request, res: Response) => {
+    res.json({ avatars: getUserAvatarsMap() });
+  });
+
+  app.post('/api/user/avatar', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+    const { avatar } = req.body;
+    const user = db.users.find((u) => u.id === req.user!.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    user.avatar = typeof avatar === 'string' && avatar.trim() ? avatar : null;
+    persistDatabase();
+
+    broadcast({
+      type: 'user_avatar_updated',
+      username: user.username,
+      avatar: user.avatar,
+    });
+
+    res.json({
+      success: true,
+      avatar: user.avatar,
+      user: {
+        id: user.id,
+        username: user.username,
+        createdAt: user.createdAt,
+        avatar: user.avatar,
+      },
+    });
+  });
+
+  app.delete('/api/user/avatar', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+    const user = db.users.find((u) => u.id === req.user!.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    user.avatar = null;
+    persistDatabase();
+
+    broadcast({
+      type: 'user_avatar_updated',
+      username: user.username,
+      avatar: null,
+    });
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        createdAt: user.createdAt,
+        avatar: null,
+      },
+    });
   });
 
   // 8. Custom Media Endpoints
