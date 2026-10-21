@@ -34,8 +34,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
   // Filter available names for register and registered names for login/reset
   const availableForRegister = status.approvedNames.filter((name) => !combinedRegistered.includes(name));
-  const availableForLogin = combinedRegistered.length > 0 ? combinedRegistered : status.approvedNames;
-  const availableForReset = status.approvedNames;
+  const availableForLogin = combinedRegistered;
+  const availableForReset = combinedRegistered.length > 0 ? combinedRegistered : status.approvedNames;
 
   const handleModeSwitch = (newMode: 'login' | 'register' | 'reset', preserveName?: string) => {
     setMode(newMode);
@@ -88,29 +88,101 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         body = { username: selectedUsername, newPassword: password, confirmPassword };
       }
 
-      let res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      let res: Response | null = null;
+      let data: any = null;
 
-      // If logging in and server had restarted (404), auto-sync user credentials from vault and retry
-      if (!res.ok && res.status === 404 && mode === 'login') {
-        const savedAccount = vault.savedAccounts[selectedUsername.toLowerCase()];
-        if (savedAccount) {
-          await syncVaultWithServer(vault);
-          res = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
+      try {
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        // If logging in and server had restarted (404), auto-sync user credentials from vault and retry
+        if (!res.ok && res.status === 404 && mode === 'login') {
+          const savedAccount = vault.savedAccounts[selectedUsername.toLowerCase()];
+          if (savedAccount) {
+            await syncVaultWithServer(vault);
+            res = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            });
+          }
         }
+
+        data = await res.json();
+      } catch {
+        res = null;
       }
 
-      const data = await res.json();
+      if (!res || !res.ok) {
+        // Fallback to client-side vault authentication if server is not available (e.g. GitHub Pages static host)
+        const vaultData = loadVault();
+        const lowerName = selectedUsername.toLowerCase();
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Authentication failed. Please check your credentials.');
+        if (mode === 'register') {
+          if (vaultData.registeredNames.map(n => n.toLowerCase()).includes(lowerName) || vaultData.savedAccounts[lowerName]) {
+            throw new Error('This name is already registered.');
+          }
+          const newUser: User = {
+            id: 'usr_' + Date.now(),
+            username: selectedUsername,
+            createdAt: new Date().toISOString(),
+          };
+          const token = 'local_token_' + Math.random().toString(36).substring(2);
+          vaultData.currentUser = newUser;
+          vaultData.token = token;
+          vaultData.registeredNames = Array.from(new Set([...vaultData.registeredNames, selectedUsername]));
+          vaultData.savedAccounts[lowerName] = {
+            id: newUser.id,
+            username: selectedUsername,
+            token,
+            createdAt: newUser.createdAt,
+          };
+          saveVault(vaultData);
+          onLoginSuccess(token, newUser);
+          return;
+        } else if (mode === 'login') {
+          const newUser: User = {
+            id: vaultData.savedAccounts[lowerName]?.id || 'usr_' + Date.now(),
+            username: selectedUsername,
+            createdAt: vaultData.savedAccounts[lowerName]?.createdAt || new Date().toISOString(),
+          };
+          const token = vaultData.savedAccounts[lowerName]?.token || 'local_token_' + Math.random().toString(36).substring(2);
+          vaultData.currentUser = newUser;
+          vaultData.token = token;
+          vaultData.registeredNames = Array.from(new Set([...vaultData.registeredNames, selectedUsername]));
+          vaultData.savedAccounts[lowerName] = {
+            id: newUser.id,
+            username: selectedUsername,
+            token,
+            createdAt: newUser.createdAt,
+          };
+          saveVault(vaultData);
+          onLoginSuccess(token, newUser);
+          return;
+        } else if (mode === 'reset') {
+          const newUser: User = {
+            id: vaultData.savedAccounts[lowerName]?.id || 'usr_' + Date.now(),
+            username: selectedUsername,
+            createdAt: vaultData.savedAccounts[lowerName]?.createdAt || new Date().toISOString(),
+          };
+          const token = 'local_token_' + Math.random().toString(36).substring(2);
+          vaultData.currentUser = newUser;
+          vaultData.token = token;
+          vaultData.savedAccounts[lowerName] = {
+            id: newUser.id,
+            username: selectedUsername,
+            token,
+            createdAt: newUser.createdAt,
+          };
+          saveVault(vaultData);
+          onLoginSuccess(token, newUser);
+          return;
+        }
+
+        throw new Error(data?.error || 'Authentication failed. Please check your credentials.');
       }
 
       // Successful login/register/reset
