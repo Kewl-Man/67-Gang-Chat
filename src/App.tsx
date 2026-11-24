@@ -188,7 +188,8 @@ export default function App() {
   const fetchAuthStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/status');
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         setAuthStatus(data);
         return;
@@ -220,7 +221,8 @@ export default function App() {
       const res = await fetch('/api/messages', {
         headers: { Authorization: `Bearer ${authToken}` },
       });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (Array.isArray(data.messages)) {
           setMessages(data.messages);
@@ -245,7 +247,8 @@ export default function App() {
       const res = await fetch('/api/media', {
         headers: { Authorization: `Bearer ${authToken}` },
       });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (Array.isArray(data.all)) {
           setCustomMedia(data.all);
@@ -266,7 +269,8 @@ export default function App() {
   const fetchAvatars = useCallback(async () => {
     try {
       const res = await fetch('/api/users/avatars');
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (data.avatars) {
           setUserAvatars(data.avatars);
@@ -283,8 +287,8 @@ export default function App() {
       map[vault.currentUser.username.toLowerCase()] = vault.currentUser.avatar;
     }
     for (const acc of Object.values(vault.savedAccounts)) {
-      if ((acc as { avatar?: string }).avatar) {
-        map[acc.username.toLowerCase()] = (acc as { avatar?: string }).avatar!;
+      if (acc.avatar) {
+        map[acc.username.toLowerCase()] = acc.avatar;
       }
     }
     setUserAvatars(map);
@@ -459,35 +463,46 @@ export default function App() {
       }
 
       let verifiedUser: User | null = null;
+      let serverReachable = false;
 
-      try {
-        const res = await fetch('/api/auth/me', {
-          headers: { Authorization: `Bearer ${savedToken}` },
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          verifiedUser = data.user;
-        }
-      } catch (err) {
-        console.warn('Initial session check failed:', err);
-      }
-
-      // If server doesn't know user (e.g. server restarted or container cold-started), auto-restore from vault!
-      if (!verifiedUser && (vault.currentUser || Object.keys(vault.savedAccounts).length > 0)) {
-        console.log('[67 Gang Vault] Server restarted or missing session; auto-restoring from local vault...');
-        await syncVaultWithServer(vault);
+      if (!savedToken.startsWith('local_token_')) {
         try {
-          const retryRes = await fetch('/api/auth/me', {
+          const res = await fetch('/api/auth/me', {
             headers: { Authorization: `Bearer ${savedToken}` },
           });
-          if (retryRes.ok) {
-            const data = await retryRes.json();
-            verifiedUser = data.user;
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            serverReachable = true;
+            if (res.ok) {
+              const data = await res.json();
+              verifiedUser = data.user;
+            }
           }
         } catch (err) {
-          console.warn('Retry auth failed:', err);
+          console.warn('Initial session check failed:', err);
         }
+
+        // If server doesn't know user (e.g. server restarted or container cold-started), auto-restore from vault!
+        if (!verifiedUser && serverReachable && (vault.currentUser || Object.keys(vault.savedAccounts).length > 0)) {
+          console.log('[67 Gang Vault] Server restarted or missing session; auto-restoring from local vault...');
+          await syncVaultWithServer(vault);
+          try {
+            const retryRes = await fetch('/api/auth/me', {
+              headers: { Authorization: `Bearer ${savedToken}` },
+            });
+            if (retryRes.ok) {
+              const data = await retryRes.json();
+              verifiedUser = data.user;
+            }
+          } catch (err) {
+            console.warn('Retry auth failed:', err);
+          }
+        }
+      }
+
+      // Static / GitHub Pages fallback: restore local session from vault when no backend is available
+      if (!verifiedUser && !serverReachable && vault.currentUser && vault.token === savedToken) {
+        verifiedUser = vault.currentUser;
       }
 
       if (verifiedUser) {
@@ -813,27 +828,49 @@ export default function App() {
     dataUrl: string;
     shape: CropShape | 'original';
   }) => {
-    if (!token) return;
+    if (!token || !currentUser) return;
 
-    const res = await fetch('/api/media/upload', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(payload),
-    });
+    try {
+      const res = await fetch('/api/media/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to save media');
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || 'Failed to save media');
+        }
+        const data = await res.json();
+        setCustomMedia((prev) => {
+          if (prev.some((m) => m.id === data.media.id)) return prev;
+          return [data.media, ...prev];
+        });
+        return;
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message !== 'Failed to fetch') {
+        throw err;
+      }
     }
 
-    const data = await res.json();
-    setCustomMedia((prev) => {
-      if (prev.some((m) => m.id === data.media.id)) return prev;
-      return [data.media, ...prev];
-    });
+    // Static / GitHub Pages fallback
+    const localMedia: CustomMedia = {
+      id: 'media_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      name: payload.name,
+      type: payload.type,
+      url: payload.dataUrl,
+      shape: payload.shape,
+      createdBy: currentUser.username,
+      createdAt: new Date().toISOString(),
+    };
+    setCustomMedia((prev) => [localMedia, ...prev]);
+    saveVault({ customMedia: [localMedia] });
   };
 
   // Toggle Reaction on a message
@@ -924,6 +961,34 @@ export default function App() {
   const handleSaveCroppedAvatar = async (croppedDataUrl: string) => {
     if (!token || !currentUser) return;
     setIsSavingAvatar(true);
+
+    const applyAvatarUpdate = (avatarUrl: string) => {
+      const updatedUser: User = { ...currentUser, avatar: avatarUrl };
+      setCurrentUser(updatedUser);
+      setUserAvatars((prev) => ({
+        ...prev,
+        [currentUser.username.toLowerCase()]: avatarUrl,
+      }));
+      saveVault({ currentUser: updatedUser });
+
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(
+          JSON.stringify({
+            type: 'update_avatar',
+            avatar: avatarUrl,
+          })
+        );
+      }
+
+      setCropperState({ isOpen: false, imageSrc: null });
+      setIsAvatarSettingsOpen(false);
+      setToast({
+        id: String(Date.now()),
+        type: 'success',
+        message: 'Profile picture updated successfully!',
+      });
+    };
+
     try {
       const res = await fetch('/api/user/avatar', {
         method: 'POST',
@@ -934,49 +999,26 @@ export default function App() {
         body: JSON.stringify({ avatar: croppedDataUrl }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        const updatedAvatar = data.avatar || croppedDataUrl;
-        const updatedUser: User = { ...currentUser, avatar: updatedAvatar };
-        setCurrentUser(updatedUser);
-        setUserAvatars((prev) => ({
-          ...prev,
-          [currentUser.username.toLowerCase()]: updatedAvatar,
-        }));
-        saveVault({ currentUser: updatedUser });
-
-        // Broadcast via WS
-        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-          socketRef.current.send(
-            JSON.stringify({
-              type: 'update_avatar',
-              avatar: updatedAvatar,
-            })
-          );
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        if (res.ok) {
+          const data = await res.json();
+          applyAvatarUpdate(data.avatar || croppedDataUrl);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          setToast({
+            id: String(Date.now()),
+            type: 'error',
+            message: errData.error || 'Failed to update profile picture.',
+          });
         }
-
-        setCropperState({ isOpen: false, imageSrc: null });
-        setIsAvatarSettingsOpen(false);
-        setToast({
-          id: String(Date.now()),
-          type: 'success',
-          message: 'Profile picture updated successfully!',
-        });
       } else {
-        const errData = await res.json().catch(() => ({}));
-        setToast({
-          id: String(Date.now()),
-          type: 'error',
-          message: errData.error || 'Failed to update profile picture.',
-        });
+        // Static / GitHub Pages fallback
+        applyAvatarUpdate(croppedDataUrl);
       }
-    } catch (err) {
-      console.error('Error saving avatar:', err);
-      setToast({
-        id: String(Date.now()),
-        type: 'error',
-        message: 'Network error saving profile picture.',
-      });
+    } catch {
+      // Static / offline fallback
+      applyAvatarUpdate(croppedDataUrl);
     } finally {
       setIsSavingAvatar(false);
     }
@@ -986,6 +1028,33 @@ export default function App() {
   const handleResetAvatar = async () => {
     if (!token || !currentUser) return;
     setIsResettingAvatar(true);
+
+    const applyAvatarReset = () => {
+      const updatedUser: User = { ...currentUser, avatar: null };
+      setCurrentUser(updatedUser);
+      setUserAvatars((prev) => {
+        const next = { ...prev };
+        delete next[currentUser.username.toLowerCase()];
+        return next;
+      });
+      saveVault({ currentUser: updatedUser });
+
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.send(
+          JSON.stringify({
+            type: 'update_avatar',
+            avatar: null,
+          })
+        );
+      }
+
+      setToast({
+        id: String(Date.now()),
+        type: 'info',
+        message: 'Profile picture reset to default avatar.',
+      });
+    };
+
     try {
       const res = await fetch('/api/user/avatar', {
         method: 'DELETE',
@@ -994,33 +1063,12 @@ export default function App() {
         },
       });
 
-      if (res.ok) {
-        const updatedUser: User = { ...currentUser, avatar: null };
-        setCurrentUser(updatedUser);
-        setUserAvatars((prev) => {
-          const next = { ...prev };
-          delete next[currentUser.username.toLowerCase()];
-          return next;
-        });
-        saveVault({ currentUser: updatedUser });
-
-        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-          socketRef.current.send(
-            JSON.stringify({
-              type: 'update_avatar',
-              avatar: null,
-            })
-          );
-        }
-
-        setToast({
-          id: String(Date.now()),
-          type: 'info',
-          message: 'Profile picture reset to default avatar.',
-        });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json') || res.ok) {
+        applyAvatarReset();
       }
-    } catch (err) {
-      console.error('Error resetting avatar:', err);
+    } catch {
+      applyAvatarReset();
     } finally {
       setIsResettingAvatar(false);
     }

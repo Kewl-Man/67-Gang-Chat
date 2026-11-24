@@ -1,7 +1,19 @@
 import React, { useState } from 'react';
 import { Lock, Eye, EyeOff, ShieldCheck, UserCheck, AlertCircle, Sparkles } from 'lucide-react';
 import type { AuthStatusResponse, User } from '../types/chat.ts';
-import { loadVault, syncVaultWithServer } from '../utils/storageVault.ts';
+import { loadVault, saveVault, syncVaultWithServer } from '../utils/storageVault.ts';
+
+async function hashLocalPassword(password: string, salt: string): Promise<string> {
+  const input = `${salt}:${password}`;
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const encoded = new TextEncoder().encode(input);
+    const buf = await crypto.subtle.digest('SHA-256', encoded);
+    return Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return btoa(unescape(encodeURIComponent(input)));
+}
 
 interface AuthScreenProps {
   status: AuthStatusResponse;
@@ -89,7 +101,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       }
 
       let res: Response | null = null;
-      let data: any = null;
+      let data: {
+        token?: string;
+        user?: User;
+        accountSalt?: string;
+        accountHash?: string;
+        error?: string;
+      } | null = null;
 
       try {
         res = await fetch(endpoint, {
@@ -111,81 +129,132 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           }
         }
 
-        data = await res.json();
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          data = await res.json();
+        } else {
+          // Non-JSON response (e.g. GitHub Pages 404/405 HTML page) -> treat as static host
+          res = null;
+        }
       } catch {
         res = null;
       }
 
-      if (!res || !res.ok) {
+      if (res && !res.ok) {
+        throw new Error(data?.error || 'Authentication failed. Please check your credentials.');
+      }
+
+      if (!res || !data?.token || !data?.user) {
         // Fallback to client-side vault authentication if server is not available (e.g. GitHub Pages static host)
         const vaultData = loadVault();
         const lowerName = selectedUsername.toLowerCase();
+        const existingAccount = vaultData.savedAccounts[lowerName];
 
         if (mode === 'register') {
-          if (vaultData.registeredNames.map(n => n.toLowerCase()).includes(lowerName) || vaultData.savedAccounts[lowerName]) {
-            throw new Error('This name is already registered.');
+          if (
+            vaultData.registeredNames.some((n) => n.toLowerCase() === lowerName) ||
+            existingAccount
+          ) {
+            throw new Error('This name is already registered. Please log in instead.');
           }
+          const salt = 'local_' + Math.random().toString(36).substring(2, 10);
+          const hash = await hashLocalPassword(password, salt);
           const newUser: User = {
             id: 'usr_' + Date.now(),
             username: selectedUsername,
             createdAt: new Date().toISOString(),
           };
           const token = 'local_token_' + Math.random().toString(36).substring(2);
-          vaultData.currentUser = newUser;
-          vaultData.token = token;
-          vaultData.registeredNames = Array.from(new Set([...vaultData.registeredNames, selectedUsername]));
-          vaultData.savedAccounts[lowerName] = {
-            id: newUser.id,
-            username: selectedUsername,
+          saveVault({
+            currentUser: newUser,
             token,
-            createdAt: newUser.createdAt,
-          };
-          saveVault(vaultData);
-          onLoginSuccess(token, newUser);
+            accountSalt: salt,
+            accountHash: hash,
+            registeredNames: [selectedUsername],
+            savedAccounts: {
+              [lowerName]: {
+                id: newUser.id,
+                username: selectedUsername,
+                salt,
+                hash,
+                token,
+                createdAt: newUser.createdAt,
+              },
+            },
+          });
+          onLoginSuccess(token, newUser, salt, hash);
           return;
         } else if (mode === 'login') {
+          if (!existingAccount) {
+            throw new Error('No account found for this name yet. Please create an account first.');
+          }
+          if (existingAccount.salt && existingAccount.hash) {
+            const candidateHash = await hashLocalPassword(password, existingAccount.salt);
+            if (candidateHash !== existingAccount.hash) {
+              throw new Error('Incorrect password. Please try again or reset your password.');
+            }
+          }
           const newUser: User = {
-            id: vaultData.savedAccounts[lowerName]?.id || 'usr_' + Date.now(),
+            id: existingAccount.id || 'usr_' + Date.now(),
             username: selectedUsername,
-            createdAt: vaultData.savedAccounts[lowerName]?.createdAt || new Date().toISOString(),
+            createdAt: existingAccount.createdAt || new Date().toISOString(),
+            avatar: existingAccount.avatar ?? null,
           };
-          const token = vaultData.savedAccounts[lowerName]?.token || 'local_token_' + Math.random().toString(36).substring(2);
-          vaultData.currentUser = newUser;
-          vaultData.token = token;
-          vaultData.registeredNames = Array.from(new Set([...vaultData.registeredNames, selectedUsername]));
-          vaultData.savedAccounts[lowerName] = {
-            id: newUser.id,
-            username: selectedUsername,
+          const token = existingAccount.token || 'local_token_' + Math.random().toString(36).substring(2);
+          saveVault({
+            currentUser: newUser,
             token,
-            createdAt: newUser.createdAt,
-          };
-          saveVault(vaultData);
-          onLoginSuccess(token, newUser);
+            accountSalt: existingAccount.salt,
+            accountHash: existingAccount.hash,
+            registeredNames: [selectedUsername],
+            savedAccounts: {
+              [lowerName]: {
+                ...existingAccount,
+                id: newUser.id,
+                username: selectedUsername,
+                token,
+                createdAt: newUser.createdAt,
+              },
+            },
+          });
+          onLoginSuccess(token, newUser, existingAccount.salt, existingAccount.hash);
           return;
         } else if (mode === 'reset') {
+          const salt = 'local_' + Math.random().toString(36).substring(2, 10);
+          const hash = await hashLocalPassword(password, salt);
           const newUser: User = {
-            id: vaultData.savedAccounts[lowerName]?.id || 'usr_' + Date.now(),
+            id: existingAccount?.id || 'usr_' + Date.now(),
             username: selectedUsername,
-            createdAt: vaultData.savedAccounts[lowerName]?.createdAt || new Date().toISOString(),
+            createdAt: existingAccount?.createdAt || new Date().toISOString(),
+            avatar: existingAccount?.avatar ?? null,
           };
           const token = 'local_token_' + Math.random().toString(36).substring(2);
-          vaultData.currentUser = newUser;
-          vaultData.token = token;
-          vaultData.savedAccounts[lowerName] = {
-            id: newUser.id,
-            username: selectedUsername,
+          saveVault({
+            currentUser: newUser,
             token,
-            createdAt: newUser.createdAt,
-          };
-          saveVault(vaultData);
-          onLoginSuccess(token, newUser);
+            accountSalt: salt,
+            accountHash: hash,
+            registeredNames: [selectedUsername],
+            savedAccounts: {
+              [lowerName]: {
+                ...existingAccount,
+                id: newUser.id,
+                username: selectedUsername,
+                salt,
+                hash,
+                token,
+                createdAt: newUser.createdAt,
+              },
+            },
+          });
+          onLoginSuccess(token, newUser, salt, hash);
           return;
         }
 
         throw new Error(data?.error || 'Authentication failed. Please check your credentials.');
       }
 
-      // Successful login/register/reset
+      // Successful login/register/reset from server
       onLoginSuccess(data.token, data.user, data.accountSalt, data.accountHash);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'An error occurred';

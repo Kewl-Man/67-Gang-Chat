@@ -10,6 +10,7 @@ export interface SavedAccountInfo {
   hash?: string;
   token?: string;
   createdAt?: string;
+  avatar?: string | null;
 }
 
 export interface LocalVaultData {
@@ -92,13 +93,15 @@ export function saveVault(data: Partial<LocalVaultData>): void {
     // Merge accounts
     const mergedAccounts = { ...current.savedAccounts, ...(data.savedAccounts || {}) };
     if (data.currentUser && data.currentUser.username) {
+      const existingAcc = mergedAccounts[data.currentUser.username.toLowerCase()];
       mergedAccounts[data.currentUser.username.toLowerCase()] = {
         id: data.currentUser.id,
         username: data.currentUser.username,
-        salt: data.accountSalt || current.accountSalt,
-        hash: data.accountHash || current.accountHash,
-        token: data.token || current.token || undefined,
+        salt: data.accountSalt || current.accountSalt || existingAcc?.salt,
+        hash: data.accountHash || current.accountHash || existingAcc?.hash,
+        token: data.token || current.token || existingAcc?.token || undefined,
         createdAt: data.currentUser.createdAt,
+        avatar: data.currentUser.avatar !== undefined ? data.currentUser.avatar : existingAcc?.avatar,
       };
     }
 
